@@ -1,0 +1,69 @@
+{
+    "file_path": "COCO_val2014_000000310196.jpg",
+    "url": "http://images.cocodataset.org/val2014/COCO_val2014_000000310196.jpg",
+    "adversarial": [
+        "snowboard",
+        "backpack",
+        "person",
+        "car",
+        "skis",
+        "dog"
+    ],
+    "popular": [
+        "snowboard",
+        "dining table",
+        "person",
+        "car",
+        "skis",
+        "chair"
+    ],
+    "random": [
+        "snowboard",
+        "car",
+        "person",
+        "sandwich",
+        "skis",
+        "couch"
+    ],
+    "ground_truth": [
+        "snowboard",
+        "person",
+        "skis"
+    ],
+    "positive_sample": "A person on a snowboard weaves down a mountain slope.",
+    "adversarial_samples": {
+        "backpack": "A person with a backpack on a snowboard weaves down a mountain slope.",
+        "car": "A person in a car weaves down a mountain slope.",
+        "dog": "A person with a dog weaves down a mountain slope on a snowboard.",
+        "backpack, car": "A person with a backpack on a snowboard weaves down a mountain slope towards their car.",
+        "car, dog": "A person and a dog in a car weave down a mountain slope.",
+        "backpack, dog": "A person with a backpack and a dog on a snowboard weaves down a mountain slope.",
+        "backpack, car, dog": "A person with a backpack and a dog on a snowboard weaves down a mountain slope towards their car."
+    },
+    "popular_samples": {
+        "dining table": "A person on a snowboard weaves down a mountain slope, avoiding a dining table.",
+        "car": "A person in a car weaves down a mountain slope.",
+        "chair": "A person on a snowboard weaves down a mountain slope, passing a lone chair.",
+        "dining table, car": "A person on a snowboard weaves around a dining table and car down a mountain slope.",
+        "car, chair": "A person in a chair weaves down a mountain slope on a snowboard, eying a car below.",
+        "dining table, chair": "A person on a chair weaves down a mountain slope, steering clear of a dining table.",
+        "dining table, car, chair": "A person on a chair weaves down a mountain slope, passing a dining table and a car."
+    },
+    "random_samples": {
+        "car": "A person in a car weaves down a mountain slope.",
+        "sandwich": "A person on a snowboard weaves down a mountain slope, clutching a sandwich.",
+        "couch": "A person on a couch weaves down a mountain slope.",
+        "car, sandwich": "A person in a car weaves down a mountain slope with a sandwich.",
+        "sandwich, couch": "A person with a sandwich lounges on a couch, imagining weaving down a mountain slope.",
+        "car, couch": "A person on a couch weaves down a mountain slope in a car.",
+        "car, sandwich, couch": "A person on a couch, holding a sandwich, watches a car weave down a mountain slope."
+    },
+    "delete_samples": {
+        "snowboard": "A person swiftly maneuvers down a mountain side.",
+        "person": "A snowboard glides down the mountain slope.",
+        "skis": "A person in a kayak weaves down a mountain river.",
+        "snowboard, person": "A trail weaves down the mountain slope.",
+        "person, skis": "A dog in a sweater dashes through a grassy field.",
+        "snowboard, skis": "A rabbit on a tundra races across a mountain base."
+    }
+}
