@@ -14,6 +14,9 @@ import numpy as np
 if custom_path not in sys.path:
     sys.path.insert(0, custom_path)  # 插入开头，优先级最高
 from grounded_sam_utils import detector_seg
+from ram.models import ram_plus
+from ram import get_transform
+
 
 def mask2grid(mask):
     # 初始化24*24网格
@@ -53,6 +56,14 @@ def mask2grid(mask):
     return target_grid
 
 def build_hf_dataset(json_file_path, image_dir=None,detector=None):
+    model = ram_plus(
+        pretrained=args.pretrained,
+        image_size=args.image_size,
+        vit="swin_l"
+    )
+    model.eval()
+    model = model.to("cuda" if torch.cuda.is_available() else "cpu")
+    transform = get_transform(image_size=args.image_size)
     sam3_model = build_sam3_image_model(   
         bpe_path=None,
         device="cuda" if torch.cuda.is_available() else "cpu",

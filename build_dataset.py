@@ -49,7 +49,7 @@ def mask2grid(mask):
     
     return target_grid
 
-def build_hf_dataset(json_file_path, image_dir=None,detector=None):
+def build_hf_dataset(json_file_path, image_dir=None, detector=None, batch_size=1000):
     # 设置默认图像目录
     if image_dir is None:
         # 假设图像在data/OHD-Caps/train/images目录下
@@ -59,27 +59,29 @@ def build_hf_dataset(json_file_path, image_dir=None,detector=None):
     print(f"正在读取JSON文件: {json_file_path}")
     print(f"图像目录: {image_dir}")
     
-    # 读取JSON文件
-    data = []
-    for file_path in json_file_path:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        data.append(json.loads(line))
-                    except json.JSONDecodeError as e:
-                        print(f"解析JSON行时出错: {e}")
-                        continue
+    # 读取JSON文件 - 使用生成器避免一次性加载所有数据
+    def json_generator():
+        for file_path in json_file_path:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            yield json.loads(line)
+                        except json.JSONDecodeError as e:
+                            print(f"解析JSON行时出错: {e}")
+                            continue
     
-    print(f"成功读取 {len(data)} 条数据")
-    
-    # 准备数据集数据
-    dataset_data = []
-    qbar = tqdm(enumerate(data))
+    # 分批处理数据
+    print("开始分批处理数据...")
+    total_processed = 0
     total_miss = 0
     total_repit = 0
-    for idx,item in qbar:   
+    batches = []
+    current_batch = []
+    
+    # 遍历所有数据
+    for idx, item in enumerate(tqdm(json_generator())):
         # 获取图像文件名
         image_filename = item['file_path']
         # 构建完整的图像路径
@@ -88,80 +90,121 @@ def build_hf_dataset(json_file_path, image_dir=None,detector=None):
         # 检查图像文件是否存在
         if not os.path.exists(image_path):
             print(f"警告: 图像文件不存在 - {image_path}")
-            # 跳过不存在的图像
             continue
         
         # 尝试打开图像以验证其有效性
         try:
-            # 打开并读取图像内容
+            # 只验证图像有效性，不存储完整图像对象
             with PILImage.open(image_path) as img:
-                # 转换为RGB格式以确保一致性
+                # 转换为RGB格式以验证兼容性
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
-                # 现在img包含了实际的图像内容
+            # 关闭图像文件，释放内存
         except Exception as e:
             print(f"警告: 无效的图像文件 - {image_path}, 错误: {e}")
             continue
         
-        # 为数据集准备数据项
+        # 为数据集准备数据项，只保留必要的字段
         dataset_item = {
-            'image_filename': image_filename,  # 图像路径，将由datasets.Image自动处理
-            'image_path': image_path,
-            'image':img,
-            'ground_truth':item['ground_truth'],
-            'adversarial':item['adversarial'],
-            'popular':item['popular'],
-            'random':item['random']
+            'image_filename': image_filename,  # 图像文件名
+            'image_path': image_path,  # 完整图像路径
+            'image': image_path,  # 只存储路径，让datasets.Image自动加载
+            'positive_sample': item['positive_sample'],  # 保留原有的positive_sample
+            'ground_truth': item['ground_truth'],  # 保留原有的ground_truth
+            'popular': item['popular'],  # 保留原有的popular
+            'random': item['random'],  # 保留原有的random
+            'adversarial': item['adversarial'],  # 保留原有的adversarial
         }
-        other_obj = set(item['adversarial']+item['popular']+item['random'])
+        
+        # 计算hallucinated对象
+        other_obj = set(item['adversarial'] + item['popular'] + item['random'])
         hal_obj = []
         for obj in other_obj:
             if obj not in item['ground_truth']:
                 hal_obj.append(obj)
-        dataset_item.update({'hal_obj':hal_obj})
-        if detector!=None:
-            _,detections = detector.grounded_segmentation(
+        dataset_item['hal_obj'] = hal_obj
+        
+        # 进行物体检测
+        detections = []
+        if detector is not None:
+            _, detections = detector.grounded_segmentation(
                 image=image_path,
                 labels=item['ground_truth'],
                 polygon_refinement=True,
             )
+        
+        # 处理检测结果
         label = []
         result = []
         for detection in detections:
-            if detection.score>=0.4 or detection.label not in label:
+            if detection.score >= 0.4 or detection.label not in label:
                 detection.grid = mask2grid(detection.mask)
-                result.append(detection)
+                # 将DetectionResult对象转换为字典，只保留必要的字段
+                detection_dict = {
+                    'label': detection.label,
+                    'score': detection.score,
+                    'grid': detection.grid
+                }
+                result.append(detection_dict)
                 label.append(detection.label)
-        dataset_item.update({'mask':result})
-        detected = set([detection.label for detection in result]) # 检测到的对象
-        transfered = [label if label.endswith(".") else label+"." for label in item['ground_truth']] # GT 对象
-        miss = len([obj for obj in transfered if obj not in detected]) # 没有检测到的对象
-        repit = len(result)-len(item['ground_truth'])+miss
+        
+        dataset_item['mask'] = result
+        
+        # 计算统计信息
+        detected = set([detection['label'] for detection in result])  # 检测到的对象
+        transfered = [label if label.endswith(".") else label + "." for label in item['ground_truth']]  # GT 对象
+        miss = len([obj for obj in transfered if obj not in detected])  # 没有检测到的对象
+        repit = len(result) - len(item['ground_truth']) + miss
         total_miss += miss
         total_repit += repit
-        qbar.set_postfix({'miss':miss,'repit':repit,'avg_miss':total_miss/(idx+1),'avg_repit':total_repit/(idx+1)})
         
-        dataset_data.append(dataset_item)
+        # 添加到当前批次
+        current_batch.append(dataset_item)
+        total_processed += 1
+        
+        # 当批次达到指定大小时，保存批次
+        if len(current_batch) >= batch_size:
+            print(f"正在保存批次，包含 {len(current_batch)} 条数据")
+            # 创建批次数据集
+            batch_dataset = Dataset.from_list(current_batch)
+            try:
+                batch_dataset = batch_dataset.cast_column("image", Image())
+            except Exception as e:
+                print(f"警告: 转换图像列时出错，但数据集仍可使用 - {e}")
+            
+            batches.append(batch_dataset)
+            # 清空当前批次以释放内存
+            current_batch = []
     
-    print(f"成功处理 {len(dataset_data)} 条有效数据")
+    # 处理剩余的数据
+    if current_batch:
+        print(f"正在保存最后一批次，包含 {len(current_batch)} 条数据")
+        batch_dataset = Dataset.from_list(current_batch)
+        try:
+            batch_dataset = batch_dataset.cast_column("image", Image())
+        except Exception as e:
+            print(f"警告: 转换图像列时出错，但数据集仍可使用 - {e}")
+        
+        batches.append(batch_dataset)
+    
+    print(f"成功处理 {total_processed} 条有效数据")
     print(f"总缺失: {total_miss}, 总重复: {total_repit}")
     
-    # 直接从数据列表创建数据集，绕过DataFrame
-    print(f"正在创建数据集，包含 {len(dataset_data)} 条数据")
-    dataset = Dataset.from_list(dataset_data)
-    
-    # 不需要额外转换，因为我们已经存储了PIL图像对象
-    # 但为了确保与HuggingFace datasets的兼容性，仍然指定类型
-    try:
-        dataset = dataset.cast_column("image", Image())
-    except Exception as e:
-        print(f"警告: 转换图像列时出错，但数据集仍可使用 - {e}")
+    # 合并所有批次
+    from datasets import concatenate_datasets
+    if batches:
+        print(f"正在合并 {len(batches)} 个批次...")
+        dataset = concatenate_datasets(batches)
+    else:
+        print("没有有效数据可处理")
+        return None
     
     print("数据集构建完成！")
     print(f"数据集大小: {len(dataset)}")
     print(f"数据集特征: {list(dataset.features.keys())}")
     
     return dataset
+
 
 
 def main():
