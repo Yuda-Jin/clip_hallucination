@@ -260,9 +260,9 @@ def load_dataset(data_args: DataTrainingArguments) -> "Dataset":
                 value_list.append(False)
         return value_list
     
-    logger.info(f"过滤前数据集大小: {len(dataset)}")
-    dataset = dataset.filter(filter_none_masks)
-    logger.info(f"过滤后数据集大小: {len(dataset)}")
+    # logger.info(f"过滤前数据集大小: {len(dataset)}")
+    # dataset = dataset.filter(filter_none_masks)
+    # logger.info(f"过滤后数据集大小: {len(dataset)}")
     return dataset
 
 
@@ -370,7 +370,7 @@ def train(
                 logits_per_patch = obj_logits_per_text.t()
                 fg_loss = logits_per_patch * sequence_mask.to(logits_per_patch.device)
                 obj_loss_sum += fg_loss.mean()
-            avg_obj_loss = obj_loss_sum / len(grid_mask)
+            avg_obj_loss = -obj_loss_sum / len(grid_mask)
 
             
             # 合并实例级损失和细粒度损失
