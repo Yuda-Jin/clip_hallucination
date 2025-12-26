@@ -6,7 +6,7 @@
 export CUDA_VISIBLE_DEVICES=0
 
 # 数据集路径
-DATASET_PATH="/root/autodl-tmp/dataset/OHD-Caps-train-mask10"
+DATASET_PATH="/root/autodl-tmp/dataset/OHD-Caps-train-sam3"
 
 # 输出目录
 OUTPUT_DIR="/root/autodl-tmp/output/ft-clip"

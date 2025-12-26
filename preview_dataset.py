@@ -26,7 +26,7 @@ def get_fixed_args():
     class Args:
         def __init__(self):
             # 数据集路径 - 需要根据实际情况修改
-            self.dataset_path = "/root/autodl-tmp/dataset/OHD-Caps-train-mask"
+            self.dataset_path = "/root/autodl-tmp/dataset/OHD-Caps-train-sam3"
             # 要预览的样本数量
             self.num_samples = 10
             # 是否显示mask信息

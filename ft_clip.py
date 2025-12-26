@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from torchvision.transforms import CenterCrop, ConvertImageDtype, Normalize, Resize
 from torchvision.transforms.functional import InterpolationMode
-
+import numpy as np
 import transformers
 from transformers import (
     CLIPImageProcessor,
@@ -99,6 +99,44 @@ class DataTrainingArguments:
         default=None, metadata={"help": "预处理进程数"}
     )
 
+def mask2grid(mask):
+    # 初始化24*24网格
+    if not isinstance(mask, np.ndarray):
+        mask = np.array(mask)
+    grid_size = 24
+    target_grid = np.zeros((grid_size, grid_size), dtype=int)
+    # 获取掩码尺寸
+    mask_height, mask_width = mask.shape
+    # binary_mask = (mask == 255).astype(np.uint8)
+    # 计算每个网格单元格在原始掩码中的大小
+    cell_height = mask_height / grid_size
+    cell_width = mask_width / grid_size
+    
+    # 对于每个网格单元格，判断是否包含掩码像素
+    for grid_y in range(grid_size):
+        for grid_x in range(grid_size):
+            # 计算当前网格单元格在原始掩码中的坐标范围
+            mask_y_start = int(grid_y * cell_height)
+            mask_y_end = int((grid_y + 1) * cell_height)
+            mask_x_start = int(grid_x * cell_width)
+            mask_x_end = int((grid_x + 1) * cell_width)
+            
+            # 确保坐标在有效范围内
+            mask_y_start = max(0, mask_y_start)
+            mask_y_end = min(mask_height, mask_y_end)
+            mask_x_start = max(0, mask_x_start)
+            mask_x_end = min(mask_width, mask_x_end)
+            
+            # 检查当前单元格内1的像素是否占绝大多数（超过50%）
+            cell_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
+            total_pixels = cell_mask.size
+            ones_count = np.sum(cell_mask)
+            
+            # 如果1的像素占比超过50%，则将网格单元格设为1
+            if total_pixels > 0 and ones_count / total_pixels > 0.5:
+                target_grid[grid_y, grid_x] = 1
+    
+    return target_grid
 
 class CLIPCollator:
     """
@@ -115,21 +153,21 @@ class CLIPCollator:
         # 分离图像和文本
         images = [example["image"] for example in examples]
         # 给每个obj添加prompt模板
-        objs = []
+        objs_prompts = []
         obj_counts = []  # 记录每个图像对应的对象数量
         grid_mask = []  # 记录每个图像对应的网格掩码
         
         for example in examples:
-            current_objs = example["obj"]
-            obj_counts.append(len(current_objs))
-            objs.extend([f"There is {obj}" for obj in current_objs])
+            instance_grid = []
+            instance_obj_prompt = []
+            for obj,mask in example["obj2mask"].items():
+                if mask!=None:
+                    instance_grid.append(mask2grid(mask))
+                    instance_obj_prompt.append(f"There is {obj}.")
             
-            # 获取当前图像的网格掩码
-            # 注意：这里需要根据实际情况调整grid_mask的格式
-            # 目前grid_mask存储的是obj2grid.values()，即每个对象对应的网格
-            # 后续可能需要将其转换为适合模型使用的格式
-            current_grid_mask = example["obj2grid"].values()
-            grid_mask.append(current_grid_mask)
+            objs_prompts.append(instance_obj_prompt)
+            obj_counts.append(len(instance_grid))
+            grid_mask.append(instance_grid)
         
         captions = [f"{example['positive_sample']}" for example in examples ]
         
@@ -142,15 +180,20 @@ class CLIPCollator:
             max_length=self.data_args.max_seq_length,
             return_tensors="pt"
         )
-        
-        obj_inputs = self.processor.tokenizer(
-            objs,
-            padding="max_length",
-            truncation=True,
-            max_length=self.data_args.max_seq_length,
-            return_tensors="pt"
-        )
-        
+        obj_input_list = []
+        for instance_obj_prompt in objs_prompts:
+            if instance_obj_prompt:
+                obj_inputs = self.processor.tokenizer(
+                    instance_obj_prompt,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=self.data_args.max_seq_length,
+                    return_tensors="pt"
+                )
+                obj_input_list.append(obj_inputs)
+            else:
+                obj_input_list.append(None)
+
         # 处理图像
         image_inputs = self.processor.image_processor(
             images,
@@ -161,8 +204,7 @@ class CLIPCollator:
         processed_inputs = {
             **text_inputs,
             **image_inputs,
-            "obj_input_ids": obj_inputs["input_ids"],
-            "obj_attention_mask": obj_inputs["attention_mask"],
+            "obj_input_list": obj_input_list,
             "obj_counts": obj_counts,  # 添加每个图像的对象数量
             "grid_mask": grid_mask     # 添加网格掩码
         }
@@ -202,28 +244,25 @@ def load_dataset(data_args: DataTrainingArguments) -> "Dataset":
     logger.info(f"正在加载数据集: {data_args.dataset_path}")
     dataset = load_from_disk(data_args.dataset_path)
     
-    # 定义map函数：如果label存在grid-mask则使用grid-mask，否则分配全为0的mask
-    def process_mask(example):
-        # 检查example中是否有'label'字段
-        obj2grid = {}
-        for obj in example["mask"]:
-            obj2grid[obj["label"]]=obj["grid"]
-        for obj in example["hal_obj"]:
-            obj2grid[obj]=np.zeros((24, 24), dtype=int)
-        example["obj2grid"] = obj2grid
-        example["obj"] = list(obj2grid.keys())  # 将dict_keys转换为列表
-        return example
+    # 过滤掉所有 mask 均为 None 的样本
+    def filter_none_masks(samples):
+        """过滤掉所有 mask 均为 None 的样本"""
+        # 检查 grid_mask 中是否存在至少一个非 None 的 mask
+        value_list = []
+        for sample in samples:
+            # value_list.append(any(mask is not None for mask in sample['obj2mask'].values()))
+            print(sample)
+            for mask in sample['obj2mask'].values():
+                if mask is not None:
+                    value_list.append(True)
+                    break
+            else:
+                value_list.append(False)
+        return value_list
     
-    logger.info(f"正在处理数据集的grid...")
-    dataset = dataset.map(
-        function=process_mask,
-        batched=False,
-        num_proc=data_args.preprocessing_num_workers,
-        desc=f"Processing grids for dataset",
-        load_from_cache_file=not data_args.overwrite_cache
-    )
-
-    logger.info(f"数据集加载完成: {dataset}")
+    logger.info(f"过滤前数据集大小: {len(dataset)}")
+    dataset = dataset.filter(filter_none_masks)
+    logger.info(f"过滤后数据集大小: {len(dataset)}")
     return dataset
 
 
@@ -263,7 +302,6 @@ def load_model_and_processor(
     
     return model, processor
 
-
 def train(
     model: "CLIPModel",
     processor: CLIPProcessor,
@@ -288,167 +326,58 @@ def train(
             inputs_copy = inputs.copy()
             
             # 移除模型forward方法不需要的参数
-            fine_grained_params = ['obj_input_ids', 'obj_attention_mask', 'obj_counts', 'grid_mask']
+            fine_grained_params = ['obj_input_list', 'obj_attention_mask', 'obj_counts', 'grid_mask']
             for param in fine_grained_params:
                 if param in inputs_copy:
                     inputs_copy.pop(param)
             
             inputs_copy['output_attentions'] = True
             inputs_copy['output_hidden_states'] = True
-            
             # 获取模型输出
             outputs = model(**inputs_copy)
-            
             # origin instance loss
-            # 如果模型已经计算了损失，直接使用
-            if hasattr(outputs, 'loss') and outputs.loss is not None:
-                instance_loss = outputs.loss
-            else:
-                # 自定义损失计算逻辑示例
-                logits_per_image = outputs.logits_per_image
-                logits_per_text = outputs.logits_per_text
-                
-                # 标准CLIP损失（图像到文本和文本到图像的交叉熵损失）
-                image_loss = torch.nn.functional.cross_entropy(
-                    logits_per_image, 
-                    torch.arange(len(logits_per_image), device=logits_per_image.device)
-                )
-                text_loss = torch.nn.functional.cross_entropy(
-                    logits_per_text, 
-                    torch.arange(len(logits_per_text), device=logits_per_text.device)
-                )
-                
-                # 合并损失
-                instance_loss = (image_loss + text_loss) / 2
+            instance_loss = outputs.loss
             
             # 细粒度mask loss (参考clip_hal_raw_feature.py的实现)
-            fine_grained_loss = 0.0
-            if hasattr(outputs, 'vision_model_output') and 'obj_input_ids' in inputs:
-                try:
-                    # 获取对象级别的文本输入
-                    obj_input_ids = inputs['obj_input_ids']
-                    obj_attention_mask = inputs['obj_attention_mask']
-                    
-                    # 获取网格掩码（如果有）
-                    grid_mask = inputs.get('grid_mask', None)
-                    
-                    # 计算对象级别的文本嵌入
-                    obj_outputs = model.text_model(
-                        input_ids=obj_input_ids,
-                        attention_mask=obj_attention_mask
-                    )
-                    obj_text_embeds = obj_outputs.last_hidden_state[:, 0, :]  # 获取[CLS]标记的嵌入
-                    obj_text_embeds = model.text_projection(obj_text_embeds)
-                    obj_text_embeds = F.normalize(obj_text_embeds, dim=-1)
-                
-                    # 获取视觉特征图 - 去掉CLS标记，得到网格特征 [b, p*p, n]
-                    vision_output = outputs.vision_model_output.last_hidden_state  # (batch_size, num_patches+1, hidden_size)
-                    vision_output = vision_output[:, 1:, :]  # 去掉CLS标记 (batch_size, p*p, hidden_size)
-                    
-                    # 将视觉特征图通过视觉投影层得到投影后的视觉特征
-                    projed_vision = model.visual_projection(vision_output)  # (batch_size, p*p, projection_dim)
-                    
-                    # 对投影后的视觉特征进行归一化
-                    projed_vision = F.normalize(projed_vision, dim=-1)
-                    
-                    # 细粒度对比损失计算
-                    # 由于每张图片的obj数量不一致，暂时不进行批量计算，逐张处理
-                    batch_size = projed_vision.size(0)
-                    total_fine_grained_loss = 0.0
-                    loss_count = 0
-                    
-                    # 假设inputs中包含了每个图像对应的对象数量信息
-                    # 如果没有，需要从CLIPCollator中传递这个信息
-                    # 这里先假设每个图像的对象数量存储在inputs['obj_counts']中
-                    if 'obj_counts' in inputs:
-                        obj_counts = inputs['obj_counts']
-                        obj_start_idx = 0
-                        
-                        for i in range(batch_size):
-                            # 获取当前图像的视觉特征 [p*p, n]
-                            current_vision = projed_vision[i]  # (p*p, n)
-                            
-                            # 获取当前图像对应的对象数量
-                            num_objs = obj_counts[i]
-                            if num_objs == 0:
-                                continue
-                            
-                            # 获取当前图像对应的对象文本嵌入 [num_objs, n]
-                            current_obj_text = obj_text_embeds[obj_start_idx:obj_start_idx+num_objs]  # (num_objs, n)
-                            obj_start_idx += num_objs
-                            
-                            # 使用grid_mask挑选对应网格（如果提供了）
-                            if grid_mask is not None and grid_mask[i] is not None:
-                                # 这里需要根据grid_mask的具体格式来挑选网格
-                                # 假设grid_mask[i]是一个布尔掩码，形状为[p*p]
-                                selected_vision = current_vision[grid_mask[i]]  # (selected_patches, n)
-                            else:
-                                # 如果没有grid_mask，使用所有网格
-                                selected_vision = current_vision  # (p*p, n)
-                            
-                            # 计算当前图像的视觉特征和对象文本的相似度
-                            # 相似度矩阵形状: [selected_patches, num_objs]
-                            similarity = torch.matmul(selected_vision, current_obj_text.t())
-                            similarity = similarity * model.logit_scale.exp()
-                            
-                            # 计算细粒度对比损失
-                            # 对于每个网格特征，它应该与所有属于该图像的对象匹配
-                            num_visual = selected_vision.size(0)
-                            labels = torch.ones(num_visual, num_objs, device=similarity.device)
-                            
-                            # 使用二元交叉熵损失
-                            probs = torch.sigmoid(similarity)
-                            loss = F.binary_cross_entropy(probs, labels)
-                            
-                            total_fine_grained_loss += loss
-                            loss_count += 1
-                        
-                        if loss_count > 0:
-                            fine_grained_loss = total_fine_grained_loss / loss_count
-                    else:
-                        # 简化版：如果没有obj_counts信息，使用原来的计算方式
-                        # 但这里会假设每个图像的对象数量相同
-                        num_visual_features = projed_vision.size(1)  # p*p = 576
-                        num_objects_total = obj_text_embeds.size(0)
-                        
-                        # 假设每个图像的对象数量相同
-                        num_objects_per_image = num_objects_total // batch_size
-                        
-                        if num_objects_per_image > 0:
-                            # 创建标签矩阵
-                            labels = torch.zeros(batch_size * num_visual_features, num_objects_total, device=projed_vision.device)
-                            
-                            for i in range(batch_size):
-                                # 当前图像的对象索引范围
-                                start_obj = i * num_objects_per_image
-                                end_obj = start_obj + num_objects_per_image
-                                
-                                # 当前图像的视觉特征索引范围
-                                start_visual = i * num_visual_features
-                                end_visual = start_visual + num_visual_features
-                                
-                                # 标记当前图像的视觉特征与对象的匹配关系
-                                labels[start_visual:end_visual, start_obj:end_obj] = 1.0
-                            
-                            # 计算视觉特征和对象文本的相似度
-                            flattened_vision = projed_vision.view(batch_size * num_visual_features, -1)  # [b*p*p, n]
-                            similarity_matrix = torch.matmul(flattened_vision, obj_text_embeds.t())  # [b*p*p, total_objs]
-                            similarity_matrix = similarity_matrix * model.logit_scale.exp()
-                            
-                            # 使用二元交叉熵损失
-                            probs = torch.sigmoid(similarity_matrix)
-                            fine_grained_loss = F.binary_cross_entropy(probs, labels)
-                    
-                except Exception as e:
-                    # 如果细粒度损失计算失败，跳过这部分损失
-                    logger.warning(f"细粒度损失计算失败: {e}")
-                    fine_grained_loss = 0.0
+            obj_loss_sum = 0.0
+             # 获取对象级别的文本输入
+            obj_input_list = inputs['obj_input_list']
+            
+            # 获取网格掩码（如果有）
+            grid_mask = inputs["grid_mask"]
+            for i in range(len(grid_mask)):
+                mask = grid_mask[i]
+                # Convert list of 24x24 numpy arrays to tensor of shape (24*24, N)
+                # where N is the number of masks
+                # Stack the mask arrays and reshape to (24*24, N)
+                mask_stacked = np.stack(mask, axis=1)  # Shape: (24, 24, N)
+                mask_tensor = torch.from_numpy(mask_stacked).float()  # Convert to tensor
+                sequence_mask = mask_tensor.view(24*24, -1)  # Reshape to (24*24, N)
+                # 计算对象级别的文本嵌入
+                # 需要遍历所有的instance
+                obj_outputs = model.text_model(
+                    input_ids=obj_input_list[i]['input_ids'],
+                    attention_mask=obj_input_list[i]['attention_mask']
+                )
+                obj_text_embeds = obj_outputs.pooler_output
+                obj_text_embeds = model.text_projection(obj_text_embeds)
+                obj_text_embeds = F.normalize(obj_text_embeds, dim=-1)
+                image_embeds = outputs.vision_model_output.hidden_states[-1][i, 1:, :]
+                image_embeds = model.visual_projection(image_embeds)
+                image_embeds = F.normalize(image_embeds, dim=-1)
+                obj_logits_per_text = torch.matmul(obj_text_embeds, image_embeds.t().to(obj_text_embeds.device))
+                obj_logits_per_text = obj_logits_per_text * model.logit_scale.exp().to(obj_text_embeds.device)
+                logits_per_patch = obj_logits_per_text.t()
+                fg_loss = logits_per_patch * sequence_mask.to(logits_per_patch.device)
+                obj_loss_sum += fg_loss.mean()
+            avg_obj_loss = obj_loss_sum / len(grid_mask)
+
             
             # 合并实例级损失和细粒度损失
             alpha = 0.5  # 细粒度损失的权重
-            loss = instance_loss + alpha * fine_grained_loss
+            loss = instance_loss + alpha * avg_obj_loss
             
-            return (loss, outputs) if return_outputs else loss
+            return loss
     
     # 创建数据整理器
     collator = CLIPCollator(processor, data_args)

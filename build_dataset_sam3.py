@@ -21,7 +21,7 @@ def mask2grid(mask):
     target_grid = np.zeros((grid_size, grid_size), dtype=int)
     # 获取掩码尺寸
     mask_height, mask_width = mask.shape
-    binary_mask = (mask == 255).astype(np.uint8)
+    # binary_mask = (mask == 255).astype(np.uint8)
     # 计算每个网格单元格在原始掩码中的大小
     cell_height = mask_height / grid_size
     cell_width = mask_width / grid_size
@@ -42,7 +42,7 @@ def mask2grid(mask):
             mask_x_end = min(mask_width, mask_x_end)
             
             # 检查当前单元格内1的像素是否占绝大多数（超过50%）
-            cell_mask = binary_mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
+            cell_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
             total_pixels = cell_mask.size
             ones_count = np.sum(cell_mask)
             
