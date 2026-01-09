@@ -4,6 +4,7 @@
     // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "Python Debugger: ft_clip",
             "type": "debugpy",
@@ -11,7 +12,7 @@
             "program": "ft_clip.py",
             "args": [
                     "--model_name_or_path" ,"openai/clip-vit-large-patch14-336" ,
-                    "--dataset_path", "/root/autodl-tmp/dataset/OHD-Caps-train-sam3" ,
+                    "--dataset_path", "/root/autodl-tmp/dataset/OHD-Caps-train-sam3-cleaned" ,
                     "--output_dir", "/root/autodl-tmp/output/ft-clip",
                     "--per_device_train_batch_size", "16" ,
                     "--per_device_eval_batch_size", "16" , 

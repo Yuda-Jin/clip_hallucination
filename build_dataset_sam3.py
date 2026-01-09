@@ -138,7 +138,7 @@ def build_hf_dataset(json_file_path, image_dir=None,detector=None):
                 H, W = output['masks'].shape[-2:]
                 mask = np.full((H, W), False, dtype=bool)
                 # obj2mask[obj] = mask
-                obj2grid[obj] = mask2grid(mask)
+                # obj2grid[obj] = mask2grid(mask)
             else:
                 mask = output['masks'].squeeze(1).detach().cpu().numpy()
                 merge_mask = np.any(mask,axis=0)

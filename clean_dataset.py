@@ -8,7 +8,7 @@
 from datasets import load_from_disk
 import logging
 import os
-
+import numpy as np
 # 设置日志
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -17,12 +17,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def mask2grid(mask):
+    if not isinstance(mask, np.ndarray):
+        mask = np.array(mask)
+    grid_size = 24
+    target_grid = np.zeros((grid_size, grid_size), dtype=np.float32)
+    mask_height, mask_width = mask.shape
+
+    cell_height = mask_height / grid_size
+    cell_width = mask_width / grid_size
+
+    for grid_y in range(grid_size):
+        for grid_x in range(grid_size):
+            mask_y_start = int(grid_y * cell_height)
+            mask_y_end = int((grid_y + 1) * cell_height)
+            mask_x_start = int(grid_x * cell_width)
+            mask_x_end = int((grid_x + 1) * cell_width)
+
+            mask_y_start = max(0, mask_y_start)
+            mask_y_end = min(mask_height, mask_y_end)
+            mask_x_start = max(0, mask_x_start)
+            mask_x_end = min(mask_width, mask_x_end)
+
+            cell_mask = mask[mask_y_start:mask_y_end, mask_x_start:mask_x_end]
+            total_pixels = cell_mask.size
+            ones_count = np.sum(cell_mask)
+
+            if total_pixels > 0 and ones_count / total_pixels > 0.5:
+                target_grid[grid_y, grid_x] = 1.0
+
+    return target_grid
+
+
 def clean_sample(sample):
     """
     清洗单个样本：
     - 移除 obj2mask 中值为 None 的项
     - 如果清洗后为空，则整个样本应被过滤掉（返回 None）
     """
+    new_sample = dict(sample) 
     obj2mask = sample.get("obj2mask", {})
     if not isinstance(obj2mask, dict):
         return None  # 非法格式，过滤
@@ -34,8 +67,10 @@ def clean_sample(sample):
         print('error!')
         return None  # 全是 None，过滤掉
     
-    sample["obj2mask"] = cleaned
-    return sample
+    new_sample["obj2mask"] = cleaned
+    obj2grid = {k:mask2grid(v) for k,v in cleaned.items()}
+    new_sample["obj2grid"] = obj2grid
+    return new_sample
 
 def main():
     dataset_path = "/root/autodl-tmp/dataset/OHD-Caps-train-sam3"
@@ -55,6 +90,7 @@ def main():
         clean_sample,
         num_proc=20,      # 使用全部 CPU 核心
         desc="清洗样本",
+        load_from_cache_file=False,
         writer_batch_size=100,       # 控制写入批次大小，节省内存
         keep_in_memory=False          # 不强制保留在内存
     )

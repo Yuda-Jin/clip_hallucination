@@ -19,7 +19,7 @@ python ft_clip.py \
     --model_name_or_path $MODEL_NAME \
     --dataset_path $DATASET_PATH \
     --output_dir $OUTPUT_DIR \
-    --per_device_train_batch_size 16 \
+    --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 16 \
     --learning_rate 5e-5 \
     --num_train_epochs 3 \
@@ -34,4 +34,5 @@ python ft_clip.py \
     --do_train \
     --do_eval \
     --overwrite_output_dir \
-    --remove_unused_columns=False
+    --remove_unused_columns=False \
+    --preprocessing_num_workers 8
